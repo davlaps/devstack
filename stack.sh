@@ -107,7 +107,7 @@ if [[ $EUID -eq 0 ]]; then
 
     # since this script runs as a normal user, we need to give that user
     # ability to run sudo
-    dpkg -l sudo || apt_get update && install_package sudo
+    dpkg -l sudo || apt_get update && apt_get install sudo
 
     if ! getent passwd stack >/dev/null; then
         echo "Creating a user called stack"
@@ -266,6 +266,29 @@ function read_password {
         echo "$var=$pw" >> $localrc
     fi
     set -o xtrace
+}
+
+# is_service_enabled() checks if the service(s) specified as arguments are
+# enabled by the user in **ENABLED_SERVICES**.
+#
+# If there are multiple services specified as arguments the test performs a
+# boolean OR or if any of the services specified on the command line
+# return true.
+#
+# There is a special cases for some 'catch-all' services::
+#   **nova** returns true if any service enabled start with **n-**
+#   **glance** returns true if any service enabled start with **g-**
+#   **quantum** returns true if any service enabled start with **q-**
+
+function is_service_enabled() {
+    services=$@
+    for service in ${services}; do
+        [[ ,${ENABLED_SERVICES}, =~ ,${service}, ]] && return 0
+        [[ ${service} == "nova" && ${ENABLED_SERVICES} =~ "n-" ]] && return 0
+        [[ ${service} == "glance" && ${ENABLED_SERVICES} =~ "g-" ]] && return 0
+        [[ ${service} == "quantum" && ${ENABLED_SERVICES} =~ "q-" ]] && return 0
+    done
+    return 1
 }
 
 
@@ -591,7 +614,7 @@ function get_packages() {
 
 # install apt requirements
 apt_get update
-install_package $(get_packages $FILES/apts)
+apt_get install $(get_packages $FILES/apts)
 
 # install python requirements
 pip_install $(get_packages $FILES/pips | sort -u)
@@ -625,6 +648,9 @@ if is_service_enabled horizon; then
 fi
 if is_service_enabled quantum; then
     git_clone $QUANTUM_CLIENT_REPO $QUANTUM_CLIENT_DIR $QUANTUM_CLIENT_BRANCH
+    if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
+        git_clone $QUANTUM_REPO $QUANTUM_DIR $QUANTUM_BRANCH
+    fi
 fi
 if is_service_enabled q-svc; then
     # quantum
@@ -678,7 +704,7 @@ fi
 # ------
 
 if [[ $SYSLOG != "False" ]]; then
-    install_package rsyslog-relp
+    apt_get install -y rsyslog-relp
     if [[ "$SYSLOG_HOST" = "$HOST_IP" ]]; then
         # Configure the master host to receive
         cat <<EOF >/tmp/90-stack-m.conf
@@ -693,7 +719,7 @@ EOF
 EOF
         sudo mv /tmp/90-stack-s.conf /etc/rsyslog.d
     fi
-    restart_service rsyslog
+    sudo /usr/sbin/service rsyslog restart
 fi
 
 
@@ -704,7 +730,7 @@ if is_service_enabled rabbit; then
     # Install and start rabbitmq-server
     # the temp file is necessary due to LP: #878600
     tfile=$(mktemp)
-    install_package rabbitmq-server > "$tfile" 2>&1
+    apt_get install rabbitmq-server > "$tfile" 2>&1
     cat "$tfile"
     rm -f "$tfile"
     # change the rabbit password since the default is "guest"
@@ -739,60 +765,15 @@ EOF
     fi
 
     # Install and start mysql-server
-    install_package mysql-server
+    apt_get install mysql-server
     # Update the DB to give user ‘$MYSQL_USER’@’%’ full control of the all databases:
     sudo mysql -uroot -p$MYSQL_PASSWORD -h127.0.0.1 -e "GRANT ALL PRIVILEGES ON *.* TO '$MYSQL_USER'@'%' identified by '$MYSQL_PASSWORD';"
 
     # Edit /etc/mysql/my.cnf to change ‘bind-address’ from localhost (127.0.0.1) to any (0.0.0.0) and restart the mysql service:
     sudo sed -i 's/127.0.0.1/0.0.0.0/g' /etc/mysql/my.cnf
-    restart_service mysql
+    sudo service mysql restart
 fi
 
-# Our screenrc file builder
-function screen_rc {
-    SCREENRC=$TOP_DIR/stack-screenrc
-    if [[ ! -e $SCREENRC ]]; then
-        # Name the screen session
-        echo "sessionname stack" > $SCREENRC
-        # Set a reasonable statusbar
-        echo 'hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< %= %H"' >> $SCREENRC
-        echo "screen -t stack bash" >> $SCREENRC
-    fi
-    # If this service doesn't already exist in the screenrc file
-    if ! grep $1 $SCREENRC 2>&1 > /dev/null; then
-        NL=`echo -ne '\015'`
-        echo "screen -t $1 bash" >> $SCREENRC
-        echo "stuff \"$2$NL\"" >> $SCREENRC
-    fi
-}
-
-# Our screen helper to launch a service in a hidden named screen
-function screen_it {
-    NL=`echo -ne '\015'`
-    if is_service_enabled $1; then
-        # Append the service to the screen rc file
-        screen_rc "$1" "$2"
-
-        screen -S stack -X screen -t $1
-        # sleep to allow bash to be ready to be send the command - we are
-        # creating a new window in screen and then sends characters, so if
-        # bash isn't running by the time we send the command, nothing happens
-        sleep 1.5
-
-        if [[ -n ${SCREEN_LOGDIR} ]]; then
-            screen -S stack -p $1 -X logfile ${SCREEN_LOGDIR}/screen-${1}.${CURRENT_LOG_TIME}.log
-            screen -S stack -p $1 -X log on
-            ln -sf ${SCREEN_LOGDIR}/screen-${1}.${CURRENT_LOG_TIME}.log ${SCREEN_LOGDIR}/screen-${1}.log
-        fi
-        screen -S stack -p $1 -X stuff "$2$NL"
-    fi
-}
-
-# create a new named screen to run processes in
-screen -d -m -S stack -t stack -s /bin/bash
-sleep 1
-# set a reasonable statusbar
-screen -r stack -X hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< %= %H"
 
 # Horizon
 # -------
@@ -802,7 +783,7 @@ screen -r stack -X hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< 
 if is_service_enabled horizon; then
 
     # Install apache2, which is NOPRIME'd
-    install_package apache2 libapache2-mod-wsgi
+    apt_get install apache2 libapache2-mod-wsgi
 
 
     # Remove stale session database.
@@ -827,7 +808,7 @@ if is_service_enabled horizon; then
         s,%GROUP%,$APACHE_GROUP,g;
         s,%HORIZON_DIR%,$HORIZON_DIR,g;
     " -i /etc/apache2/sites-enabled/000-default
-    restart_service apache2
+    sudo service apache2 restart
 fi
 
 
@@ -849,7 +830,7 @@ if is_service_enabled g-reg; then
 
     # (re)create glance database
     mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS glance;'
-    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE glance CHARACTER SET utf8;'
+    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE glance;'
 
     function glance_config {
         sudo sed -e "
@@ -860,7 +841,7 @@ if is_service_enabled g-reg; then
             s,%KEYSTONE_SERVICE_HOST%,$KEYSTONE_SERVICE_HOST,g;
             s,%KEYSTONE_SERVICE_PORT%,$KEYSTONE_SERVICE_PORT,g;
             s,%KEYSTONE_SERVICE_PROTOCOL%,$KEYSTONE_SERVICE_PROTOCOL,g;
-            s,%SQL_CONN%,$BASE_SQL_CONN/glance?charset=utf8,g;
+            s,%SQL_CONN%,$BASE_SQL_CONN/glance,g;
             s,%SERVICE_TENANT_NAME%,$SERVICE_TENANT_NAME,g;
             s,%SERVICE_USERNAME%,glance,g;
             s,%SERVICE_PASSWORD%,$SERVICE_PASSWORD,g;
@@ -891,88 +872,6 @@ if is_service_enabled g-reg; then
         glance_config $GLANCE_API_PASTE_INI
     fi
 fi
-
-# Quantum
-# -------
-
-# Quantum service
-if is_service_enabled q-svc; then
-    QUANTUM_CONF_DIR=/etc/quantum
-    if [[ ! -d $QUANTUM_CONF_DIR ]]; then
-        sudo mkdir -p $QUANTUM_CONF_DIR
-    fi
-    sudo chown `whoami` $QUANTUM_CONF_DIR
-    if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
-        # Install deps
-        # FIXME add to files/apts/quantum, but don't install if not needed!
-        kernel_version=`cat /proc/version | cut -d " " -f3`
-        install_package openvswitch-switch openvswitch-datapath-dkms linux-headers-$kernel_version
-        # Create database for the plugin/agent
-        if is_service_enabled mysql; then
-            mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS ovs_quantum;'
-            mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE IF NOT EXISTS ovs_quantum CHARACTER SET utf8;'
-        else
-            echo "mysql must be enabled in order to use the $Q_PLUGIN Quantum plugin."
-            exit 1
-        fi
-        QUANTUM_PLUGIN_INI_FILE=$QUANTUM_CONF_DIR/plugins.ini
-        # must remove this file from existing location, otherwise Quantum will prefer it
-        if [[ -e $QUANTUM_DIR/etc/plugins.ini ]]; then
-            sudo mv $QUANTUM_DIR/etc/plugins.ini $QUANTUM_PLUGIN_INI_FILE
-        fi
-        # Make sure we're using the openvswitch plugin
-        sudo sed -i -e "s/^provider =.*$/provider = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPlugin/g" $QUANTUM_PLUGIN_INI_FILE
-    fi
-    if [[ -e $QUANTUM_DIR/etc/quantum.conf ]]; then
-        sudo mv $QUANTUM_DIR/etc/quantum.conf $QUANTUM_CONF_DIR/quantum.conf
-    fi
-    screen_it q-svc "cd $QUANTUM_DIR && PYTHONPATH=.:$QUANTUM_CLIENT_DIR:$PYTHONPATH python $QUANTUM_DIR/bin/quantum-server $QUANTUM_CONF_DIR/quantum.conf"
-fi
-
-# Quantum agent (for compute nodes)
-if is_service_enabled q-agt; then
-    if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
-        # Set up integration bridge
-        OVS_BRIDGE=${OVS_BRIDGE:-br-int}
-        sudo ovs-vsctl --no-wait -- --if-exists del-br $OVS_BRIDGE
-        sudo ovs-vsctl --no-wait add-br $OVS_BRIDGE
-        sudo ovs-vsctl --no-wait br-set-external-id $OVS_BRIDGE bridge-id br-int
-
-        # Start up the quantum <-> openvswitch agent
-        QUANTUM_OVS_CONF_DIR=$QUANTUM_CONF_DIR/plugins/openvswitch
-        mkdir -p $QUANTUM_OVS_CONF_DIR
-        QUANTUM_OVS_CONFIG_FILE=$QUANTUM_OVS_CONF_DIR/ovs_quantum_plugin.ini
-        if [[ -e $QUANTUM_DIR/etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini ]]; then
-            sudo mv $QUANTUM_DIR/etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini $QUANTUM_OVS_CONFIG_FILE
-        fi
-        sudo sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/ovs_quantum?charset=utf8/g" $QUANTUM_OVS_CONFIG_FILE
-        screen_it q-agt "sleep 4; sudo python $QUANTUM_DIR/quantum/plugins/openvswitch/agent/ovs_quantum_agent.py $QUANTUM_OVS_CONFIG_FILE -v"
-    fi
-
-fi
-
-# Melange service
-if is_service_enabled m-svc; then
-    if is_service_enabled mysql; then
-        mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS melange;'
-        mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE melange CHARACTER SET utf8;'
-    else
-        echo "mysql must be enabled in order to use the $Q_PLUGIN Quantum plugin."
-        exit 1
-    fi
-    MELANGE_CONFIG_FILE=$MELANGE_DIR/etc/melange/melange.conf
-    cp $MELANGE_CONFIG_FILE.sample $MELANGE_CONFIG_FILE
-    sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/melange?charset=utf8/g" $MELANGE_CONFIG_FILE
-    cd $MELANGE_DIR && PYTHONPATH=.:$PYTHONPATH python $MELANGE_DIR/bin/melange-manage --config-file=$MELANGE_CONFIG_FILE db_sync
-    screen_it m-svc "cd $MELANGE_DIR && PYTHONPATH=.:$PYTHONPATH python $MELANGE_DIR/bin/melange-server --config-file=$MELANGE_CONFIG_FILE"
-    echo "Waiting for melange to start..."
-    if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- http://127.0.0.1:9898; do sleep 1; done"; then
-      echo "melange-server did not start"
-      exit 1
-    fi
-    melange mac_address_range create cidr=$M_MAC_RANGE
-fi
-
 
 
 # Nova
@@ -1028,7 +927,7 @@ if is_service_enabled n-cpu; then
 
     # Virtualization Configuration
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    install_package libvirt-bin
+    apt_get install libvirt-bin
 
     # Force IP forwarding on, just on case
     sudo sysctl -w net.ipv4.ip_forward=1
@@ -1052,7 +951,7 @@ if is_service_enabled n-cpu; then
     # to simulate multiple systems.
     if [[ "$LIBVIRT_TYPE" == "lxc" ]]; then
         if [[ "$DISTRO" > natty ]]; then
-            install_package cgroup-lite
+            apt_get install cgroup-lite
         else
             cgline="none /cgroup cgroup cpuacct,memory,devices,cpu,freezer,blkio 0 0"
             sudo mkdir -p /cgroup
@@ -1071,7 +970,7 @@ if is_service_enabled n-cpu; then
     # libvirt detects various settings on startup, as we potentially changed
     # the system configuration (modules, filesystems), we need to restart
     # libvirt to detect those changes.
-    restart_service libvirt-bin
+    sudo /etc/init.d/libvirt-bin restart
 
 
     # Instance Storage
@@ -1122,7 +1021,7 @@ fi
 # Storage Service
 if is_service_enabled swift; then
     # Install memcached for swift.
-    install_package memcached
+    apt_get install memcached
 
     # We first do a bit of setup by creating the directories and
     # changing the permissions so we can run it as our user.
@@ -1306,7 +1205,7 @@ if is_service_enabled n-vol; then
     # By default, the backing file is 2G in size, and is stored in /opt/stack.
 
     # install the package
-    install_package tgt
+    apt_get install tgt
 
     if ! sudo vgs $VOLUME_GROUP; then
         VOLUME_BACKING_FILE=${VOLUME_BACKING_FILE:-$DEST/nova-volumes-backing-file}
@@ -1373,6 +1272,12 @@ if is_service_enabled quantum; then
         add_nova_opt "linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver"
         add_nova_opt "quantum_use_dhcp=True"
     fi
+    if is_service_enabled q-agt && [[ "$Q_PLUGIN" = "openvswitch" ]]; then
+        add_nova_opt "libvirt_vif_type=ethernet"
+        add_nova_opt "libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtOpenVswitchDriver"
+        add_nova_opt "linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver"
+        add_nova_opt "quantum_use_dhcp=True"
+    fi
 else
     add_nova_opt "network_manager=nova.network.manager.$NET_MAN"
 fi
@@ -1390,7 +1295,7 @@ add_nova_opt "flat_network_bridge=$FLAT_NETWORK_BRIDGE"
 if [ -n "$FLAT_INTERFACE" ]; then
     add_nova_opt "flat_interface=$FLAT_INTERFACE"
 fi
-add_nova_opt "sql_connection=$BASE_SQL_CONN/nova?charset=utf8"
+add_nova_opt "sql_connection=$BASE_SQL_CONN/nova"
 add_nova_opt "libvirt_type=$LIBVIRT_TYPE"
 add_nova_opt "instance_name_template=${INSTANCE_NAME_PREFIX}%08x"
 # All nova-compute workers need to know the vnc configuration options
@@ -1490,6 +1395,52 @@ fi
 # so send the start command by forcing text into the window.
 # Only run the services specified in ``ENABLED_SERVICES``
 
+# Our screenrc file builder
+function screen_rc {
+    SCREENRC=$TOP_DIR/stack-screenrc
+    if [[ ! -e $SCREENRC ]]; then
+        # Name the screen session
+        echo "sessionname stack" > $SCREENRC
+        # Set a reasonable statusbar
+        echo 'hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< %= %H"' >> $SCREENRC
+        echo "screen -t stack bash" >> $SCREENRC
+    fi
+    # If this service doesn't already exist in the screenrc file
+    if ! grep $1 $SCREENRC 2>&1 > /dev/null; then
+        NL=`echo -ne '\015'`
+        echo "screen -t $1 bash" >> $SCREENRC
+        echo "stuff \"$2$NL\"" >> $SCREENRC
+    fi
+}
+
+# Our screen helper to launch a service in a hidden named screen
+function screen_it {
+    NL=`echo -ne '\015'`
+    if is_service_enabled $1; then
+        # Append the service to the screen rc file
+        screen_rc "$1" "$2"
+
+        screen -S stack -X screen -t $1
+        # sleep to allow bash to be ready to be send the command - we are
+        # creating a new window in screen and then sends characters, so if
+        # bash isn't running by the time we send the command, nothing happens
+        sleep 1.5
+
+        if [[ -n ${SCREEN_LOGDIR} ]]; then
+            screen -S stack -p $1 -X logfile ${SCREEN_LOGDIR}/screen-${1}.${CURRENT_LOG_TIME}.log
+            screen -S stack -p $1 -X log on
+            ln -sf ${SCREEN_LOGDIR}/screen-${1}.${CURRENT_LOG_TIME}.log ${SCREEN_LOGDIR}/screen-${1}.log
+        fi
+        screen -S stack -p $1 -X stuff "$2$NL"
+    fi
+}
+
+# create a new named screen to run processes in
+screen -d -m -S stack -t stack -s /bin/bash
+sleep 1
+# set a reasonable statusbar
+screen -r stack -X hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< %= %H"
+
 # launch the glance registry service
 if is_service_enabled g-reg; then
     screen_it g-reg "cd $GLANCE_DIR; bin/glance-registry --config-file=$GLANCE_CONF_DIR/glance-registry.conf"
@@ -1508,12 +1459,12 @@ fi
 if is_service_enabled key; then
     # (re)create keystone database
     mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS keystone;'
-    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE keystone CHARACTER SET utf8;'
+    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE keystone;'
 
     # Configure keystone.conf
     KEYSTONE_CONF=$KEYSTONE_DIR/etc/keystone.conf
     cp $FILES/keystone.conf $KEYSTONE_CONF
-    sudo sed -e "s,%SQL_CONN%,$BASE_SQL_CONN/keystone?charset=utf8,g" -i $KEYSTONE_CONF
+    sudo sed -e "s,%SQL_CONN%,$BASE_SQL_CONN/keystone,g" -i $KEYSTONE_CONF
     sudo sed -e "s,%DEST%,$DEST,g" -i $KEYSTONE_CONF
     sudo sed -e "s,%SERVICE_TOKEN%,$SERVICE_TOKEN,g" -i $KEYSTONE_CONF
     sudo sed -e "s,%KEYSTONE_DIR%,$KEYSTONE_DIR,g" -i $KEYSTONE_CONF
@@ -1591,11 +1542,85 @@ if is_service_enabled n-api; then
     fi
 fi
 
+# Quantum service
+if is_service_enabled q-svc; then
+    QUANTUM_CONF_DIR=/etc/quantum
+    if [[ ! -d $QUANTUM_CONF_DIR ]]; then
+        sudo mkdir -p $QUANTUM_CONF_DIR
+    fi
+    sudo chown `whoami` $QUANTUM_CONF_DIR
+    if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
+        # Install deps
+        # FIXME add to files/apts/quantum, but don't install if not needed!
+        apt_get install openvswitch-switch openvswitch-datapath-dkms
+        # Create database for the plugin/agent
+        if is_service_enabled mysql; then
+            mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS ovs_quantum;'
+            mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE IF NOT EXISTS ovs_quantum;'
+        else
+            echo "mysql must be enabled in order to use the $Q_PLUGIN Quantum plugin."
+            exit 1
+        fi
+        #QUANTUM_PLUGIN_INI_FILE=$QUANTUM_CONF_DIR/plugins.ini
+        #sudo cp $QUANTUM_DIR/etc/plugins.ini $QUANTUM_PLUGIN_INI_FILE
+        # Make sure we're using the openvswitch plugin
+        sudo sed -i -e "s/^provider =.*$/provider = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPlugin/g" $QUANTUM_DIR/etc/plugins.ini
+        #sudo sed -i -e "s/^provider =.*$/provider = quantum.plugins.openvswitch.ovs_quantum_plugin.OVSQuantumPlugin/g" $QUANTUM_PLUGIN_INI_FILE
+    fi
+   sudo cp $QUANTUM_DIR/etc/quantum.conf $QUANTUM_CONF_DIR/quantum.conf
+   screen_it q-svc "cd $QUANTUM_DIR && PYTHONPATH=.:$QUANTUM_CLIENT_DIR:$PYTHONPATH python $QUANTUM_DIR/bin/quantum-server $QUANTUM_CONF_DIR/quantum.conf"
+fi
+
+# Quantum agent (for compute nodes)
+if is_service_enabled q-agt; then
+    if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
+        # Set up integration bridge
+        OVS_BRIDGE=${OVS_BRIDGE:-br-int}
+        sudo ovs-vsctl --no-wait -- --if-exists del-br $OVS_BRIDGE
+        sudo ovs-vsctl --no-wait add-br $OVS_BRIDGE
+        sudo ovs-vsctl --no-wait br-set-external-id $OVS_BRIDGE bridge-id br-int
+        sudo ovs-vsctl --no-wait add-port $OVS_BRIDGE $Q_INTERFACE
+     	sudo ifconfig $Q_INTERFACE up
+        sudo ifconfig $OVS_BRIDGE up
+
+       # Start up the quantum <-> openvswitch agent
+       # QUANTUM_OVS_CONFIG_FILE=$QUANTUM_CONF_DIR/ovs_quantum_plugin.ini
+       # sudo cp $QUANTUM_DIR/etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini $QUANTUM_OVS_CONFIG_FILE
+       # sudo sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/ovs_quantum/g" $QUANTUM_OVS_CONFIG_FILE
+       QUANTUM_OVS_CONFIG_FILE=$QUANTUM_DIR/etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini
+       sudo sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/ovs_quantum/g" $QUANTUM_OVS_CONFIG_FILE
+       screen_it q-agt "sleep 4; sudo python $QUANTUM_DIR/quantum/plugins/openvswitch/agent/ovs_quantum_agent.py $QUANTUM_OVS_CONFIG_FILE -v"
+    fi
+
+fi
+
+# Melange service
+if is_service_enabled m-svc; then
+    if is_service_enabled mysql; then
+        mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS melange;'
+        mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE melange;'
+    else
+        echo "mysql must be enabled in order to use the $Q_PLUGIN Quantum plugin."
+        exit 1
+    fi
+    MELANGE_CONFIG_FILE=$MELANGE_DIR/etc/melange/melange.conf
+    cp $MELANGE_CONFIG_FILE.sample $MELANGE_CONFIG_FILE
+    sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/melange/g" $MELANGE_CONFIG_FILE
+    cd $MELANGE_DIR && PYTHONPATH=.:$PYTHONPATH python $MELANGE_DIR/bin/melange-manage --config-file=$MELANGE_CONFIG_FILE db_sync
+    screen_it m-svc "cd $MELANGE_DIR && PYTHONPATH=.:$PYTHONPATH python $MELANGE_DIR/bin/melange-server --config-file=$MELANGE_CONFIG_FILE"
+    echo "Waiting for melange to start..."
+    if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- http://127.0.0.1:9898; do sleep 1; done"; then
+      echo "melange-server did not start"
+      exit 1
+    fi
+    melange mac_address_range create cidr=$M_MAC_RANGE
+fi
+
 # If we're using Quantum (i.e. q-svc is enabled), network creation has to
 # happen after we've started the Quantum service.
 if is_service_enabled mysql && is_service_enabled nova; then
     # create a small network
-    $NOVA_DIR/bin/nova-manage network create private $FIXED_RANGE 1 $FIXED_NETWORK_SIZE $NETWORK_CREATE_ARGS
+    $NOVA_DIR/bin/nova-manage network create private $FIXED_RANGE 1 $FIXED_NETWORK_SIZE
 
     # create some floating ips
     $NOVA_DIR/bin/nova-manage floating create $FLOATING_RANGE
@@ -1651,8 +1676,17 @@ if is_service_enabled g-reg; then
     TOKEN=`curl -s -d  "{\"auth\":{\"passwordCredentials\": {\"username\": \"$ADMIN_USER\", \"password\": \"$ADMIN_PASSWORD\"}, \"tenantName\": \"$ADMIN_TENANT\"}}" -H "Content-type: application/json" http://$HOST_IP:5000/v2.0/tokens | python -c "import sys; import json; tok = json.loads(sys.stdin.read()); print tok['access']['token']['id'];"`
 
     # Option to upload legacy ami-tty, which works with xenserver
-    if [[ -n "$UPLOAD_LEGACY_TTY" ]]; then
-        IMAGE_URLS="${IMAGE_URLS:+${IMAGE_URLS},}http://images.ansolabs.com/tty.tgz"
+    if [ $UPLOAD_LEGACY_TTY ]; then
+        if [ ! -f $FILES/tty.tgz ]; then
+            wget -c http://images.ansolabs.com/tty.tgz -O $FILES/tty.tgz
+        fi
+
+        tar -zxf $FILES/tty.tgz -C $FILES/images
+        RVAL=`glance add --silent-upload -A $TOKEN name="tty-kernel" is_public=true container_format=aki disk_format=aki < $FILES/images/aki-tty/image`
+        KERNEL_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
+        RVAL=`glance add --silent-upload -A $TOKEN name="tty-ramdisk" is_public=true container_format=ari disk_format=ari < $FILES/images/ari-tty/image`
+        RAMDISK_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
+        glance add -A $TOKEN name="tty" is_public=true container_format=ami disk_format=ami kernel_id=$KERNEL_ID ramdisk_id=$RAMDISK_ID < $FILES/images/ami-tty/image
     fi
 
     for image_url in ${IMAGE_URLS//,/ }; do
@@ -1664,8 +1698,6 @@ if is_service_enabled g-reg; then
 
         KERNEL=""
         RAMDISK=""
-        DISK_FORMAT=""
-        CONTAINER_FORMAT=""
         case "$IMAGE_FNAME" in
             *.tar.gz|*.tgz)
                 # Extract ami and aki files
@@ -1676,65 +1708,40 @@ if is_service_enabled g-reg; then
                 rm -Rf "$xdir";
                 mkdir "$xdir"
                 tar -zxf $FILES/$IMAGE_FNAME -C "$xdir"
-                KERNEL=$(for f in "$xdir/"*-vmlinuz* "$xdir/"aki-*/image; do
+                KERNEL=$(for f in "$xdir/"*-vmlinuz*; do
                          [ -f "$f" ] && echo "$f" && break; done; true)
-                RAMDISK=$(for f in "$xdir/"*-initrd* "$xdir/"ari-*/image; do
+                RAMDISK=$(for f in "$xdir/"*-initrd*; do
                          [ -f "$f" ] && echo "$f" && break; done; true)
-                IMAGE=$(for f in "$xdir/"*.img "$xdir/"ami-*/image; do
+                IMAGE=$(for f in "$xdir/"*.img; do
                          [ -f "$f" ] && echo "$f" && break; done; true)
-                if [[ -z "$IMAGE_NAME" ]]; then
-                    IMAGE_NAME=$(basename "$IMAGE" ".img")
-                fi
+                [ -n "$IMAGE_NAME" ]
+                IMAGE_NAME=$(basename "$IMAGE" ".img")
                 ;;
             *.img)
                 IMAGE="$FILES/$IMAGE_FNAME";
                 IMAGE_NAME=$(basename "$IMAGE" ".img")
-                DISK_FORMAT=raw
-                CONTAINER_FORMAT=bare
                 ;;
             *.img.gz)
                 IMAGE="$FILES/${IMAGE_FNAME}"
                 IMAGE_NAME=$(basename "$IMAGE" ".img.gz")
-                DISK_FORMAT=raw
-                CONTAINER_FORMAT=bare
-                ;;
-            *.qcow2)
-                IMAGE="$FILES/${IMAGE_FNAME}"
-                IMAGE_NAME=$(basename "$IMAGE" ".qcow2")
-                DISK_FORMAT=qcow2
-                CONTAINER_FORMAT=bare
                 ;;
             *) echo "Do not know what to do with $IMAGE_FNAME"; false;;
         esac
 
-        if [ "$CONTAINER_FORMAT" = "bare" ]; then
-            glance add --silent-upload -A $TOKEN name="$IMAGE_NAME" is_public=true container_format=$CONTAINER_FORMAT disk_format=$DISK_FORMAT < <(zcat --force "${IMAGE}")
-        else
-            # Use glance client to add the kernel the root filesystem.
-            # We parse the results of the first upload to get the glance ID of the
-            # kernel for use when uploading the root filesystem.
-            KERNEL_ID=""; RAMDISK_ID="";
-            if [ -n "$KERNEL" ]; then
-                RVAL=`glance add --silent-upload -A $TOKEN name="$IMAGE_NAME-kernel" is_public=true container_format=aki disk_format=aki < "$KERNEL"`
-                KERNEL_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
-            fi
-            if [ -n "$RAMDISK" ]; then
-                RVAL=`glance add --silent-upload -A $TOKEN name="$IMAGE_NAME-ramdisk" is_public=true container_format=ari disk_format=ari < "$RAMDISK"`
-                RAMDISK_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
-            fi
-            glance add -A $TOKEN name="${IMAGE_NAME%.img}" is_public=true container_format=ami disk_format=ami ${KERNEL_ID:+kernel_id=$KERNEL_ID} ${RAMDISK_ID:+ramdisk_id=$RAMDISK_ID} < <(zcat --force "${IMAGE}")
+        # Use glance client to add the kernel the root filesystem.
+        # We parse the results of the first upload to get the glance ID of the
+        # kernel for use when uploading the root filesystem.
+        KERNEL_ID=""; RAMDISK_ID="";
+        if [ -n "$KERNEL" ]; then
+            RVAL=`glance add --silent-upload -A $TOKEN name="$IMAGE_NAME-kernel" is_public=true container_format=aki disk_format=aki < "$KERNEL"`
+            KERNEL_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
         fi
+        if [ -n "$RAMDISK" ]; then
+            RVAL=`glance add --silent-upload -A $TOKEN name="$IMAGE_NAME-ramdisk" is_public=true container_format=ari disk_format=ari < "$RAMDISK"`
+            RAMDISK_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
+        fi
+        glance add -A $TOKEN name="${IMAGE_NAME%.img}" is_public=true container_format=ami disk_format=ami ${KERNEL_ID:+kernel_id=$KERNEL_ID} ${RAMDISK_ID:+ramdisk_id=$RAMDISK_ID} < <(zcat --force "${IMAGE}")
     done
-fi
-
-
-# Run local script
-# ================
-
-# Run ``local.sh`` if it exists to perform user-managed tasks
-if [[ -x $TOP_DIR/local.sh ]]; then
-    echo "Running user script $TOP_DIR/local.sh"
-    $TOP_DIR/local.sh
 fi
 
 
