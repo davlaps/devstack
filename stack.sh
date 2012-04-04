@@ -182,6 +182,10 @@ Q_PLUGIN=${Q_PLUGIN:-openvswitch}
 Q_PORT=${Q_PORT:-9696}
 # Default Quantum Host
 Q_HOST=${Q_HOST:-localhost}
+# Tunneling support.
+Q_TUNNEL_ENABLE=${Q_TUNNEL_ENABLE:-0}
+# Tunneling links.
+Q_TUNNEL_REMOTE_IP_FILE=${Q_TUNNEL_REMOTE_IP_FILE:-/dev/null}
 
 # Default Melange Port
 M_PORT=${M_PORT:-9898}
@@ -1590,9 +1594,11 @@ if is_service_enabled q-agt; then
        QUANTUM_OVS_CONFIG_FILE=$QUANTUM_DIR/etc/quantum/plugins/openvswitch/ovs_quantum_plugin.ini
        sudo sed -i -e "s/^sql_connection =.*$/sql_connection = mysql:\/\/$MYSQL_USER:$MYSQL_PASSWORD@$MYSQL_HOST\/ovs_quantum/g" $QUANTUM_OVS_CONFIG_FILE
        if [[ "$Q_TUNNEL_ENABLE" = "1" ]]; then
-           sudo sed -i -e "s/^enable-tunneling =.*$/enable-tunneling = True/g" $QUANTUM_OVS_CONFIG_FILE
-           sudo sed -i -e "s/^\# remote-ip-file =.*$/remote-ip-file = $Q_TUNNEL_REMOTE_IP_FILE/g" $QUANTUM_OVS_CONFIG_FILE
-           sudo sed -i -e "s/^\# local-ip =.*$/local-ip = $HOST_IP/g" $QUANTUM_OVS_CONFIG_FILE
+           sudo sed -i -e "s/^enable-tunneling =.*$/enable-tunneling = True/g" \
+	       $QUANTUM_OVS_CONFIG_FILE
+           sudo sed -i -e "s|^.*remote-ip-file =.*$|remote-ip-file = $Q_TUNNEL_REMOTE_IP_FILE|g" \
+               $QUANTUM_OVS_CONFIG_FILE
+           sudo sed -i -e "s/^.*local-ip =.*$/local-ip = $HOST_IP/g" $QUANTUM_OVS_CONFIG_FILE
        fi
        screen_it q-agt "sleep 4; sudo python $QUANTUM_DIR/quantum/plugins/openvswitch/agent/ovs_quantum_agent.py $QUANTUM_OVS_CONFIG_FILE -v"
     fi

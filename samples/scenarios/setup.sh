@@ -10,7 +10,7 @@
 # Modify the SCENARIO variable below to use a different scenario.
 
 HOSTNAME=`hostname`
-SCENARIO=multinode-ovs
+SCENARIO=multinode-ovs-tunnels
 INFO_FILE=samples/scenarios/$SCENARIO/$HOSTNAME-info
 echo $INFO_FILE
 grep localrc $INFO_FILE | awk -F"|" '{ if (length($2)) { print $2; } }' > localrc
