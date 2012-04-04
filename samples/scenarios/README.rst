@@ -11,5 +11,9 @@ Scenarios
 multinode-ovs:
 
 	One controller node (gto), one compute node (mustang)
-	 OVS plugin (without tunneling).
+	OVS plugin (without tunneling).
 
+multinode-ovs-tunnels:
+
+	One controller node (gto), one compute node (mustang).
+	OVS plugin (with GRE tunneling).
