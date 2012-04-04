@@ -1,5 +1,20 @@
 DevStack is a set of scripts and utilities to quickly deploy an OpenStack cloud.
 
+# Devstack + Multi-node Quantum Configurations
+
+This is a forked devstack repo maintained by del at nicira.com.
+I have created it at the request of members of the community and will use
+it to track work in progress and store sample multi-node quantum
+configurations.  Any diffs between this repo and the main devstack repo will
+be periodically submitted for review and (where appropriate) inclusion in
+the main repo.
+
+The sample configurations are stored in devstack/samples/scenarios.
+
+If you have any questions, please feel free to email Dave at the address above.
+Feedback, suggestions, comments are appreciated.
+
+
 # Goals
 
 * To quickly build dev OpenStack environments in a clean Oneiric or Precise environment
