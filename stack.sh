@@ -1575,6 +1575,8 @@ if is_service_enabled q-svc; then
     fi
    sudo cp $QUANTUM_DIR/etc/quantum.conf $QUANTUM_CONF_DIR/quantum.conf
    screen_it q-svc "cd $QUANTUM_DIR && PYTHONPATH=.:$QUANTUM_CLIENT_DIR:$PYTHONPATH python $QUANTUM_DIR/bin/quantum-server $QUANTUM_CONF_DIR/quantum.conf"
+elif [[ "$Q_PLUGIN" = "openvswitch" ]]; then
+    apt_get install openvswitch-switch openvswitch-datapath-dkms
 fi
 
 # Quantum agent (for compute nodes)
