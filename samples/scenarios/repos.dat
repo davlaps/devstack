@@ -1,0 +1,9 @@
+https://github.com/openstack/nova.git   adb2124
+https://github.com/openstack/glance.git 8e9e0ca
+https://github.com/openstack/keystone.git   198fe22
+https://github.com/cloudbuilders/noVNC.git  22b9a75
+https://github.com/openstack/horizon.git    c555673
+https://github.com/openstack/python-novaclient.git  f6014dd
+https://github.com/openstack/python-keystoneclient  7b85329
+https://github.com/openstack/quantum    540f1ed
+https://github.com/openstack/python-quantumclient   9b09f53
